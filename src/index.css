@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.bg-checkerboard {
+  background-image: conic-gradient(#1a1a1a 90deg, #222 90deg 180deg, #1a1a1a 180deg 270deg, #222 270deg);
+  background-size: 20px 20px;
+}
