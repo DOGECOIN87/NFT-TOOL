@@ -4,14 +4,14 @@
  */
 
 import React, { useState, useRef, useEffect, ChangeEvent } from 'react';
-import { Eye, EyeOff, Trash2, Image as ImageIcon, ChevronUp, ChevronDown, Lock, Unlock, Upload, Scissors, Move, Undo2, Redo2, Download, Smile, Github } from 'lucide-react';
+import { Eye, EyeOff, Trash2, Image as ImageIcon, ChevronUp, ChevronDown, Lock, Unlock, Upload, Scissors, Move, Undo2, Redo2, Download, Smile, Github, Archive } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import '@tensorflow/tfjs';
 import * as blazeface from '@tensorflow-models/blazeface';
 import { Layer, Point } from './types';
 import { getPerspectiveTransform } from './lib/perspective';
 
-const CANVAS_SIZE = 1024;
+const CANVAS_SIZE = 1393;
 
 type DragState = 
   | { type: 'perspective', layerId: string, index: number }
@@ -35,6 +35,7 @@ export default function App() {
   const [dragState, setDragState] = useState<DragState | null>(null);
 
   const [toolMode, setToolMode] = useState<'scale' | 'perspective'>('scale');
+  const [importAtNativeSize, setImportAtNativeSize] = useState(true);
   const [isDetectingFace, setIsDetectingFace] = useState<string | null>(null);
 
   const detectAndCutFace = async (layerId: string) => {
@@ -139,8 +140,8 @@ export default function App() {
     const resize = () => {
       if (!wrapperRef.current) return;
       const rect = wrapperRef.current.getBoundingClientRect();
-      const w = rect.width - 48; // padding
-      const h = rect.height - 48;
+      const w = Math.max(10, rect.width - 200); // More padding for handles
+      const h = Math.max(10, rect.height - 200);
       setScale(Math.min(w / CANVAS_SIZE, h / CANVAS_SIZE, 1));
     };
     resize();
@@ -208,7 +209,7 @@ export default function App() {
     }
   };
 
-  const addImageFromUrl = (url: string, name: string) => {
+  const addImageFromUrl = (url: string, name: string, token?: string) => {
     return new Promise<void>((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -216,12 +217,22 @@ export default function App() {
         const w = img.width;
         const h = img.height;
 
-        const imgScale = Math.min((CANVAS_SIZE * 0.8) / w, (CANVAS_SIZE * 0.8) / h, 1);
-        const dw = w * imgScale;
-        const dh = h * imgScale;
+        if (!((w === 1393 && h === 1393) || (w === 1391 && h === 1391) || (w === 1080 && h === 1080))) {
+          console.warn(`Warning: The imported image "${name}" has dimensions ${w}x${h}, which does not match expected generative layer format (Background 1393x1393, Character/Face 1391x1391, Sticker 1080x1080).`);
+          // We flag it but don't prevent import
+          alert(`Warning: The imported image "${name}" has dimensions ${w}x${h}, which does not match any generative layer format (Background 1393x1393, Character/Face 1391x1391, Sticker 1080x1080). It will be imported without resizing, but may not align properly.`);
+        }
 
         const cx = CANVAS_SIZE / 2;
         const cy = CANVAS_SIZE / 2;
+
+        let dw = w;
+        let dh = h;
+        if (!importAtNativeSize) {
+          const imgScale = Math.min((CANVAS_SIZE * 0.8) / w, (CANVAS_SIZE * 0.8) / h, 1);
+          dw = w * imgScale;
+          dh = h * imgScale;
+        }
 
         const newLayer: Layer = {
           id: Math.random().toString(36).substring(2, 9),
@@ -246,9 +257,17 @@ export default function App() {
       };
       img.onerror = () => reject(new Error(`Failed to load image from: ${url}`));
       
+      const authHeaders: Record<string, string> = {};
+      if (token && url.includes('github')) {
+        authHeaders['Authorization'] = `Bearer ${token}`;
+      }
+
       // Fetch as blob to avoid canvas cross-origin issues during export
-      fetch(url)
-        .then(res => res.blob())
+      fetch(url, { headers: authHeaders })
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+          return res.blob();
+        })
         .then(blob => {
           img.src = URL.createObjectURL(blob);
         })
@@ -265,10 +284,11 @@ export default function App() {
 
   const [githubModalOpen, setGithubModalOpen] = useState(false);
   const [githubUrlInput, setGithubUrlInput] = useState('');
+  const [githubTokenInput, setGithubTokenInput] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
 
-  const processGithubImport = async (url: string) => {
+  const processGithubImport = async (url: string, token: string) => {
     if (!url) return;
 
     setIsImporting(true);
@@ -291,8 +311,13 @@ export default function App() {
 
     try {
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
-      const res = await fetch(apiUrl);
-      if (!res.ok) throw new Error("Failed to fetch folder contents. Check if repo is public.");
+      const authHeaders: Record<string, string> = {};
+      if (token) {
+        authHeaders['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(apiUrl, { headers: authHeaders });
+      if (!res.ok) throw new Error("Failed to fetch folder contents. Check if repo is public or if token is valid.");
       const data = await res.json();
       
       if (!Array.isArray(data)) {
@@ -307,12 +332,29 @@ export default function App() {
 
       commitToHistory();
       
+      let successCount = 0;
+      let failureCount = 0;
+
       // Import them all sequentially
       for (const file of imageFiles) {
-          await addImageFromUrl(file.download_url, file.name);
+        try {
+          await addImageFromUrl(file.download_url, file.name, token);
+          successCount++;
+        } catch (imgErr) {
+          console.warn(`Skipping invalid or inaccessible image: ${file.name}`, imgErr);
+          failureCount++;
+        }
       }
+      
       setGithubModalOpen(false);
       setGithubUrlInput('');
+      setGithubTokenInput('');
+      
+      if (failureCount > 0 && successCount === 0) {
+        throw new Error(`Failed to import any images. ${failureCount} file(s) were invalid or inaccessible.`);
+      } else if (failureCount > 0) {
+        alert(`Successfully imported ${successCount} images. ${failureCount} file(s) failed to load.`);
+      }
     } catch (err: any) {
       console.error(err);
       setImportError(err.message || "Failed to import from GitHub.");
@@ -333,12 +375,20 @@ export default function App() {
       const w = img.width;
       const h = img.height;
 
-      const imgScale = Math.min((CANVAS_SIZE * 0.8) / w, (CANVAS_SIZE * 0.8) / h, 1);
-      const dw = w * imgScale;
-      const dh = h * imgScale;
+      if (!((w === 1393 && h === 1393) || (w === 1391 && h === 1391) || (w === 1080 && h === 1080))) {
+        alert(`Warning: The imported image "${file.name}" has dimensions ${w}x${h}, which does not match any generative layer format (Background 1393x1393, Character/Face 1391x1391, Sticker 1080x1080). It will be imported without resizing, but may not align properly.`);
+      }
 
       const cx = CANVAS_SIZE / 2;
       const cy = CANVAS_SIZE / 2;
+
+      let dw = w;
+      let dh = h;
+      if (!importAtNativeSize) {
+         const imgScale = Math.min((CANVAS_SIZE * 0.8) / w, (CANVAS_SIZE * 0.8) / h, 1);
+         dw = w * imgScale;
+         dh = h * imgScale;
+      }
 
       const newLayer: Layer = {
         id: Math.random().toString(36).substring(2, 9),
@@ -394,19 +444,82 @@ export default function App() {
     );
   };
 
-  const exportLayer = async (e: React.MouseEvent, layer: Layer) => {
-    e.stopPropagation();
-    const el = document.getElementById(`layer-wrapper-${layer.id}`);
+  const exportLayer = async (e: React.MouseEvent | null, layerToExport: Layer) => {
+    e?.stopPropagation();
+    const el = document.getElementById('main-canvas-workspace');
     if (!el) return;
+
     try {
-      const dataUrl = await toPng(el, { backgroundColor: 'rgba(0,0,0,0)', pixelRatio: 2 });
+      const handles = document.getElementById('canvas-handles-container');
+      const cutoutUI = document.getElementById('canvas-cutout-ui');
+      if (handles) handles.style.display = 'none';
+      if (cutoutUI) cutoutUI.style.display = 'none';
+      
+      const prevClasses = el.className;
+      el.className = "relative overflow-hidden flex-shrink-0";
+      const oldBg = el.style.background;
+      el.style.background = 'transparent';
+      const oldTransform = el.style.transform;
+      el.style.transform = 'none';
+
+      // Hide all other layers visually in DOM
+      const originalDisplays: Record<string, string> = {};
+      layers.forEach(l => {
+          if (l.id !== layerToExport.id) {
+             const layerEl = document.getElementById(`layer-wrapper-${l.id}`);
+             if (layerEl) {
+                 originalDisplays[l.id] = layerEl.style.display;
+                 layerEl.style.display = 'none';
+             }
+          }
+      });
+      
+      const dataUrl = await toPng(el, { 
+        backgroundColor: 'rgba(0,0,0,0)', 
+        pixelRatio: 1,
+        width: CANVAS_SIZE,
+        height: CANVAS_SIZE,
+        style: {
+          width: `${CANVAS_SIZE}px`,
+          height: `${CANVAS_SIZE}px`,
+          transform: 'none'
+        }
+      });
+      
+      if (handles) handles.style.display = '';
+      if (cutoutUI) cutoutUI.style.display = '';
+      el.className = prevClasses;
+      el.style.background = oldBg;
+      el.style.transform = oldTransform;
+
+      layers.forEach(l => {
+          if (l.id !== layerToExport.id) {
+             const layerEl = document.getElementById(`layer-wrapper-${l.id}`);
+             if (layerEl) {
+                 layerEl.style.display = originalDisplays[l.id] || '';
+             }
+          }
+      });
+
       const a = document.createElement('a');
-      a.download = `warped-${layer.name}`;
+      a.download = `layer-${layerToExport.name}`;
       if (!a.download.endsWith('.png')) a.download += '.png';
       a.href = dataUrl;
       a.click();
     } catch (err) {
       console.error('Failed to export layer', err);
+    }
+  };
+
+  const exportAllLayers = async () => {
+    // We just iterate through the current layers and export them
+    for (const layer of layers) {
+      if (layer.visible && !layer.locked) {
+        // Option to include all layers, maybe just if visible
+        await exportLayer(null, layer);
+        // Small delay to prevent browser from blocking concurrent downloads
+        await new Promise(r => setTimeout(r, 500));
+      }
     }
   };
 
@@ -421,20 +534,34 @@ export default function App() {
       if (cutoutUI) cutoutUI.style.display = 'none';
       
       const prevClasses = el.className;
-      // Strip bg-checkerboard and border classes for clean export
-      el.className = "relative overflow-hidden";
+      // Strip border classes for clean export
+      el.className = "relative overflow-hidden flex-shrink-0";
       const oldBg = el.style.background;
       el.style.background = 'transparent';
+      const oldTransform = el.style.transform;
+      el.style.transform = 'none';
 
-      const dataUrl = await toPng(el, { backgroundColor: 'rgba(0,0,0,0)', pixelRatio: 2 });
+      // pixelRatio 1 ensures we export exactly at CANVAS_SIZE
+      const dataUrl = await toPng(el, { 
+        backgroundColor: 'rgba(0,0,0,0)', 
+        pixelRatio: 1,
+        width: CANVAS_SIZE,
+        height: CANVAS_SIZE,
+        style: {
+          width: `${CANVAS_SIZE}px`,
+          height: `${CANVAS_SIZE}px`,
+          transform: 'none'
+        }
+      });
       
       if (handles) handles.style.display = '';
       if (cutoutUI) cutoutUI.style.display = '';
       el.className = prevClasses;
       el.style.background = oldBg;
+      el.style.transform = oldTransform;
 
       const a = document.createElement('a');
-      a.download = `perspective-map-export.png`;
+      a.download = `composite-export.png`;
       a.href = dataUrl;
       a.click();
     } catch (err) {
@@ -444,14 +571,14 @@ export default function App() {
 
   return (
     <div
-      className="flex h-screen w-full font-sans bg-[#111111] text-gray-200 overflow-hidden select-none"
+      className="flex flex-col-reverse md:flex-row h-screen w-full font-sans bg-[#111111] text-gray-200 overflow-hidden select-none"
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
     >
       {/* Sidebar */}
-      <div className="w-80 flex-shrink-0 border-r border-white/10 bg-[#1A1A1A] flex flex-col z-10">
-        <div className="p-4 flex items-center gap-3 border-b border-white/5">
+      <div className="w-full h-[45vh] md:h-full md:w-80 flex-shrink-0 border-t md:border-t-0 md:border-r border-white/10 bg-[#1A1A1A] flex flex-col z-10">
+        <div className="p-4 flex items-center gap-3 border-b border-white/5 flex-shrink-0">
           <div className="w-5 h-5 bg-blue-500 rounded-sm rotate-45 flex items-center justify-center shadow-lg"></div>
           <div className="flex-1">
             <h1 className="font-medium tracking-tight text-white leading-tight uppercase text-sm flex items-center gap-2">
@@ -481,6 +608,13 @@ export default function App() {
              >
                <Download className="w-4 h-4" />
              </button>
+             <button
+                onClick={exportAllLayers}
+                className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-white/5"
+                title="Batch Export All Visible Assets"
+             >
+               <Archive className="w-4 h-4" />
+             </button>
           </div>
         </div>
 
@@ -497,6 +631,19 @@ export default function App() {
             <Github className="w-4 h-4" />
             <span className="font-medium tracking-wider">IMPORT FROM GITHUB</span>
           </button>
+          
+          <label className="flex items-center gap-2 pt-2 cursor-pointer group justify-center">
+            <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center transition-colors ${importAtNativeSize ? 'bg-blue-500 border-blue-500' : 'bg-black/20 border-white/20 group-hover:border-white/40'}`}>
+              {importAtNativeSize && <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+            </div>
+            <input 
+              type="checkbox" 
+              checked={importAtNativeSize}
+              onChange={(e) => setImportAtNativeSize(e.target.checked)}
+              className="hidden" 
+            />
+            <span className="text-xs text-gray-400 group-hover:text-gray-300 transition-colors">Import at exact dimensions</span>
+          </label>
         </div>
 
         <div className="p-4 border-b border-white/5 space-y-3">
@@ -691,12 +838,12 @@ export default function App() {
       {/* Main Workspace */}
       <div 
         ref={wrapperRef}
-        className="flex-1 relative flex items-center justify-center bg-[#0F0F0F]"
+        className="flex-1 min-h-0 min-w-0 relative flex items-center justify-center bg-[#0F0F0F]"
       >
         <div
           ref={containerRef}
           id="main-canvas-workspace"
-          className="bg-checkerboard relative overflow-hidden shadow-2xl border border-white/20"
+          className="bg-checkerboard relative shadow-2xl border border-white/20 flex-shrink-0"
           style={{
             width: `${CANVAS_SIZE}px`,
             height: `${CANVAS_SIZE}px`,
@@ -705,56 +852,58 @@ export default function App() {
             touchAction: 'none'
           }}
         >
-          {/* Masked Layers */}
-          <div 
-            className="absolute inset-0 pointer-events-none"
-            style={
-              cutout.enabled
-                ? {
-                    WebkitMaskImage:
-                      cutout.mode === 'hole'
-                        ? `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, transparent ${cutout.r}px, black ${cutout.r + 0.5}px)`
-                        : `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, black ${cutout.r}px, transparent ${cutout.r + 0.5}px)`,
-                    maskImage:
-                      cutout.mode === 'hole'
-                        ? `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, transparent ${cutout.r}px, black ${cutout.r + 0.5}px)`
-                        : `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, black ${cutout.r}px, transparent ${cutout.r + 0.5}px)`,
-                  }
-                : {}
-            }
-          >
-            {layers.map((layer) => {
-               if (!layer.visible) return null;
+          <div className="absolute inset-0 overflow-hidden">
+            {/* Masked Layers */}
+            <div 
+              className="absolute inset-0 pointer-events-none"
+              style={
+                cutout.enabled
+                  ? {
+                      WebkitMaskImage:
+                        cutout.mode === 'hole'
+                          ? `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, transparent ${cutout.r}px, black ${cutout.r + 0.5}px)`
+                          : `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, black ${cutout.r}px, transparent ${cutout.r + 0.5}px)`,
+                      maskImage:
+                        cutout.mode === 'hole'
+                          ? `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, transparent ${cutout.r}px, black ${cutout.r + 0.5}px)`
+                          : `radial-gradient(circle at ${cutout.x}px ${cutout.y}px, black ${cutout.r}px, transparent ${cutout.r + 0.5}px)`,
+                    }
+                  : {}
+              }
+            >
+              {layers.map((layer) => {
+                 if (!layer.visible) return null;
 
-               const srcPoints: [Point, Point, Point, Point] = [
-                 { x: 0, y: 0 },
-                 { x: layer.originalWidth, y: 0 },
-                 { x: layer.originalWidth, y: layer.originalHeight },
-                 { x: 0, y: layer.originalHeight }
-               ];
-               
-               const transform = getPerspectiveTransform(srcPoints, layer.corners);
+                 const srcPoints: [Point, Point, Point, Point] = [
+                   { x: 0, y: 0 },
+                   { x: layer.originalWidth, y: 0 },
+                   { x: layer.originalWidth, y: layer.originalHeight },
+                   { x: 0, y: layer.originalHeight }
+                 ];
+                 
+                 const transform = getPerspectiveTransform(srcPoints, layer.corners);
 
-               return (
-                 <div
-                   key={layer.id}
-                   id={`layer-wrapper-${layer.id}`}
-                   className="absolute inset-0"
-                 >
-                   <img
-                     src={layer.url}
-                     alt={layer.name}
-                     className="absolute left-0 top-0 max-w-none transform-gpu origin-top-left"
-                     style={{
-                       width: `${layer.originalWidth}px`,
-                       height: `${layer.originalHeight}px`,
-                       transform: transform,
-                       opacity: layer.opacity,
-                     }}
-                   />
-                 </div>
-               );
-            })}
+                 return (
+                   <div
+                     key={layer.id}
+                     id={`layer-wrapper-${layer.id}`}
+                     className="absolute inset-0"
+                   >
+                     <img
+                       src={layer.url}
+                       alt={layer.name}
+                       className="absolute left-0 top-0 max-w-none transform-gpu origin-top-left"
+                       style={{
+                         width: `${layer.originalWidth}px`,
+                         height: `${layer.originalHeight}px`,
+                         transform: transform,
+                         opacity: layer.opacity,
+                       }}
+                     />
+                   </div>
+                 );
+              })}
+            </div>
           </div>
 
           {/* Handles Container */}
@@ -908,6 +1057,18 @@ export default function App() {
                   className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
                 />
               </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">
+                  GitHub Token (Optional, for private repos)
+                </label>
+                <input 
+                  type="password" 
+                  value={githubTokenInput}
+                  onChange={(e) => setGithubTokenInput(e.target.value)}
+                  placeholder="ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                  className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
               {importError && (
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-red-400 text-xs text-center">
                   {importError}
@@ -923,7 +1084,7 @@ export default function App() {
                 CANCEL
               </button>
               <button 
-                onClick={() => processGithubImport(githubUrlInput)}
+                onClick={() => processGithubImport(githubUrlInput, githubTokenInput)}
                 disabled={!githubUrlInput.trim() || isImporting}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded transition-colors disabled:opacity-50 disabled:hover:bg-blue-600 flex items-center gap-2"
               >
