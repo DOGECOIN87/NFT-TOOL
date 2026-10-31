@@ -11,7 +11,7 @@ import * as blazeface from '@tensorflow-models/blazeface';
 import { Layer, Point } from './types';
 import { getPerspectiveTransform } from './lib/perspective';
 
-const CANVAS_SIZE = 1393;
+const CANVAS_SIZE = 2048;
 
 type DragState = 
   | { type: 'perspective', layerId: string, index: number }
@@ -217,10 +217,10 @@ export default function App() {
         const w = img.width;
         const h = img.height;
 
-        if (!((w === 1393 && h === 1393) || (w === 1391 && h === 1391) || (w === 1080 && h === 1080))) {
-          console.warn(`Warning: The imported image "${name}" has dimensions ${w}x${h}, which does not match expected generative layer format (Background 1393x1393, Character/Face 1391x1391, Sticker 1080x1080).`);
+        if (!((w === 2048 && h === 2048) || (w === 1024 && h === 1024) || (w === 1080 && h === 1080))) {
+          console.warn(`Warning: The imported image "${name}" has dimensions ${w}x${h}, which does not match expected generative layer format (Canvas/Background 2048x2048, Layer 1024x1024, Sticker 1080x1080).`);
           // We flag it but don't prevent import
-          alert(`Warning: The imported image "${name}" has dimensions ${w}x${h}, which does not match any generative layer format (Background 1393x1393, Character/Face 1391x1391, Sticker 1080x1080). It will be imported without resizing, but may not align properly.`);
+          alert(`Warning: The imported image "${name}" has dimensions ${w}x${h}, which does not match any generative layer format (Canvas/Background 2048x2048, Layer 1024x1024, Sticker 1080x1080). It will be imported without resizing, but may not align properly.`);
         }
 
         const cx = CANVAS_SIZE / 2;
@@ -375,8 +375,8 @@ export default function App() {
       const w = img.width;
       const h = img.height;
 
-      if (!((w === 1393 && h === 1393) || (w === 1391 && h === 1391) || (w === 1080 && h === 1080))) {
-        alert(`Warning: The imported image "${file.name}" has dimensions ${w}x${h}, which does not match any generative layer format (Background 1393x1393, Character/Face 1391x1391, Sticker 1080x1080). It will be imported without resizing, but may not align properly.`);
+      if (!((w === 2048 && h === 2048) || (w === 1024 && h === 1024) || (w === 1080 && h === 1080))) {
+        alert(`Warning: The imported image "${file.name}" has dimensions ${w}x${h}, which does not match any generative layer format (Canvas/Background 2048x2048, Layer 1024x1024, Sticker 1080x1080). It will be imported without resizing, but may not align properly.`);
       }
 
       const cx = CANVAS_SIZE / 2;
