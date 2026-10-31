@@ -140,8 +140,8 @@ export default function App() {
     const resize = () => {
       if (!wrapperRef.current) return;
       const rect = wrapperRef.current.getBoundingClientRect();
-      const w = Math.max(10, rect.width - 200); // More padding for handles
-      const h = Math.max(10, rect.height - 200);
+      const w = Math.max(10, rect.width - 32);
+      const h = Math.max(10, rect.height - 32);
       setScale(Math.min(w / CANVAS_SIZE, h / CANVAS_SIZE, 1));
     };
     resize();
@@ -149,12 +149,28 @@ export default function App() {
     return () => window.removeEventListener('resize', resize);
   }, []);
 
+  const moveRafRef = useRef<number | null>(null);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+
   const handlePointerMove = (e: React.PointerEvent) => {
+    if (!dragState) return;
+    // Coalesce pointer events to one update per animation frame — without this,
+    // every raw pointermove re-renders the full-res canvas and dragging lags behind.
+    lastPointerRef.current = { x: e.clientX, y: e.clientY };
+    if (moveRafRef.current !== null) return;
+    moveRafRef.current = requestAnimationFrame(() => {
+      moveRafRef.current = null;
+      const p = lastPointerRef.current;
+      if (p) doPointerMove(p.x, p.y);
+    });
+  };
+
+  const doPointerMove = (clientX: number, clientY: number) => {
     if (!containerRef.current || !dragState) return;
 
     const rect = containerRef.current.getBoundingClientRect();
-    const localX = (e.clientX - rect.left) / scale;
-    const localY = (e.clientY - rect.top) / scale;
+    const localX = (clientX - rect.left) / scale;
+    const localY = (clientY - rect.top) / scale;
 
     if (dragState.type === 'perspective') {
       setLayers((prev) =>
@@ -852,7 +868,10 @@ export default function App() {
             touchAction: 'none'
           }}
         >
-          <div className="absolute inset-0 overflow-hidden">
+          <div
+            className="absolute inset-0 overflow-hidden"
+            onPointerDown={(e) => { if (e.target === e.currentTarget) setSelectedLayerId(null); }}
+          >
             {/* Masked Layers */}
             <div 
               className="absolute inset-0 pointer-events-none"
@@ -892,12 +911,25 @@ export default function App() {
                      <img
                        src={layer.url}
                        alt={layer.name}
-                       className="absolute left-0 top-0 max-w-none transform-gpu origin-top-left"
+                       draggable={false}
+                       className="absolute left-0 top-0 max-w-none transform-gpu origin-top-left pointer-events-auto"
                        style={{
                          width: `${layer.originalWidth}px`,
                          height: `${layer.originalHeight}px`,
                          transform: transform,
                          opacity: layer.opacity,
+                         cursor: layer.locked ? 'pointer' : 'move',
+                         touchAction: 'none',
+                       }}
+                       onPointerDown={(e) => {
+                         e.stopPropagation();
+                         setSelectedLayerId(layer.id);
+                         if (layer.locked || !containerRef.current) return;
+                         commitToHistory();
+                         const rect = containerRef.current.getBoundingClientRect();
+                         const localX = (e.clientX - rect.left) / scale;
+                         const localY = (e.clientY - rect.top) / scale;
+                         setDragState({ type: 'move', layerId: layer.id, startX: localX, startY: localY, initialCorners: [...layer.corners] });
                        }}
                      />
                    </div>
@@ -928,8 +960,8 @@ export default function App() {
                    
                    {/* Move handle in center */}
                    <div
-                      className="absolute w-12 h-12 -ml-6 -mt-6 bg-blue-500/10 backdrop-blur-sm border border-blue-500/40 rounded-xl shadow-lg pointer-events-auto flex items-center justify-center cursor-move text-white hover:bg-blue-500/30 hover:border-blue-500 transition-all z-50 hover:scale-110"
-                      style={{ left: centerX, top: centerY }}
+                      className="absolute w-12 h-12 -ml-6 -mt-6 bg-blue-500/10 border border-blue-500/40 rounded-xl shadow-lg pointer-events-auto flex items-center justify-center cursor-move text-white hover:bg-blue-500/30 hover:border-blue-500 transition-colors z-50"
+                      style={{ left: centerX, top: centerY, transform: `scale(${1 / scale})` }}
                       onPointerDown={(e) => {
                         e.stopPropagation();
                         commitToHistory();
@@ -952,7 +984,7 @@ export default function App() {
                       <div
                         key={`scale-${layer.id}-${i}`}
                         className="absolute w-8 h-8 -ml-4 -mt-4 bg-transparent group pointer-events-auto z-50 flex items-center justify-center"
-                        style={{ left: pt.x, top: pt.y, cursor: i % 2 === 0 ? 'nwse-resize' : 'nesw-resize' }}
+                        style={{ left: pt.x, top: pt.y, cursor: i % 2 === 0 ? 'nwse-resize' : 'nesw-resize', transform: `scale(${1 / scale})` }}
                         onPointerDown={(e) => {
                           e.stopPropagation();
                           commitToHistory();
@@ -982,7 +1014,8 @@ export default function App() {
                         className="absolute w-8 h-8 -ml-4 -mt-4 bg-transparent group pointer-events-auto flex items-center justify-center z-50 cursor-crosshair"
                         style={{
                           left: `${pt.x}px`,
-                          top: `${pt.y}px`
+                          top: `${pt.y}px`,
+                          transform: `scale(${1 / scale})`
                         }}
                         onPointerDown={(e) => {
                           e.stopPropagation();
@@ -1017,8 +1050,8 @@ export default function App() {
               
               {/* Center point dragging handle */}
               <div 
-                className="absolute w-5 h-5 -ml-2.5 -mt-2.5 bg-blue-500 border border-white rounded-full cursor-move pointer-events-auto shadow-md hover:scale-110 transition-transform flex items-center justify-center p-0.5"
-                style={{ left: cutout.x, top: cutout.y }}
+                className="absolute w-5 h-5 -ml-2.5 -mt-2.5 bg-blue-500 border border-white rounded-full cursor-move pointer-events-auto shadow-md flex items-center justify-center p-0.5"
+                style={{ left: cutout.x, top: cutout.y, transform: `scale(${1 / scale})` }}
                 onPointerDown={(e) => { e.stopPropagation(); commitToHistory(); setDragState({ type: 'mask-center' }); }}
               >
                   <Move className="w-full h-full text-white" />
@@ -1026,8 +1059,8 @@ export default function App() {
               
               {/* Edge radius handle */}
               <div 
-                className="absolute w-4 h-4 -ml-2 -mt-2 bg-white border border-blue-600 rounded-full cursor-nesw-resize pointer-events-auto shadow-md hover:scale-125 transition-transform"
-                style={{ left: cutout.x + (cutout.r * Math.cos(Math.PI/4)), top: cutout.y + (cutout.r * Math.sin(Math.PI/4)) }}
+                className="absolute w-4 h-4 -ml-2 -mt-2 bg-white border border-blue-600 rounded-full cursor-nesw-resize pointer-events-auto shadow-md"
+                style={{ left: cutout.x + (cutout.r * Math.cos(Math.PI/4)), top: cutout.y + (cutout.r * Math.sin(Math.PI/4)), transform: `scale(${1 / scale})` }}
                 onPointerDown={(e) => { e.stopPropagation(); commitToHistory(); setDragState({ type: 'mask-edge' }); }}
               />
             </div>
